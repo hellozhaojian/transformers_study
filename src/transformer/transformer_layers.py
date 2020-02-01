@@ -51,7 +51,7 @@ class PositionLayer(nn.Module):
             self.weights = nn.Parameter(torch.Tensor(self.max_pos * 2 + 1, self.emb_size))
         else:
             self.weights = nn.Parameter(torch.Tensor(self.max_pos, self.emb_size))
-        self.reset_param()
+        #self.reset_param()
 
     def reset_param(self):
         torch.nn.init.xavier_normal(self.weights)
@@ -144,7 +144,7 @@ class PositionwiseFeedForward(nn.Module):
         self.linear_second = nn.Linear(ff_dim, model_dim)
 
     def forward(self, x: Tensor) -> Tensor:
-        self.linear_second(self.dropout(self.linear_first(x)))
+        return self.linear_second(self.dropout(self.linear_first(x)))
 
 
 class EncoderLayer(nn.Module):
@@ -225,3 +225,45 @@ class EncoderDecoder(nn.Module):
 
     def decode(self, memroy, src_mask, target, target_mask):
         return self.decoder(self.target_emb(target), memroy, src_mask, target_mask)
+
+
+class LableSmoothingLayer(nn.Module):
+
+    def __init__(self, number_of_class: int, padding_idx: int, smoothing = 0.0):
+        super(LableSmoothingLayer, self).__init__()
+        self.criteron = nn.KLDivLoss(size_average=False)
+        self.padding_idx = padding_idx
+        self.confidence = 1 - smoothing
+        self.number_of_class = number_of_class
+        self.smoothing = smoothing
+        self.true_dist = None
+
+    def forward(self, x: Tensor, target: Tensor):
+        """
+        @param x: shape -> [length, number_of_class]
+        @param target: shape -> [length]
+        """
+        assert x.size(-1) == self.number_of_class
+        true_dist: Tensor = x.data.clone()
+        # 2: 1 give to the target class/label, 1 give padding
+        true_dist.fill_(self.smoothing/ (self.number_of_class -2))
+        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        true_dist[:, self.padding_idx] = 0
+        mask: Tensor = torch.nonzero(target == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        self.true_dist = true_dist
+        return self.criteron(x, Variable(true_dist, requires_grad=False))
+
+
+if __name__ == "__main__":
+    crit = LableSmoothingLayer(5, 0, 0.4)
+    predict = torch.FloatTensor([[0, 0.2, 0.7, 0.1, 0],
+                                 [0, 0.2, 0.7, 0.1, 0],
+                                 [0, 0.2, 0.7, 0.1, 0]])
+    v = crit(Variable(predict.log()),
+             Variable(torch.LongTensor([2, 1, 0])))
+
+    # Show the target distributions expected by the system.
+    plt.imshow(crit.true_dist)
+    plt.show()
